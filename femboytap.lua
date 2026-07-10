@@ -1037,7 +1037,7 @@ mNames, modelPaths = C.modelList()
 modelLb = vSec:Listbox("", mNames, "fill", 1)
 modelWd = vSec.ws[#vSec.ws]
 submodels:Col()
-local vSsec = submodels:Section("Settings")
+local vSsec = submodels:Section("Scan")
 local cbModelAlt = vSsec:Checkbox("Characters only (skip exg/materials)", C.getModelScanAlt())
 local inpModelSearch = vSsec:Input("Search name", C.getModelFilter(), "filter by name...")
 local function reloadModelList()
@@ -1066,11 +1066,13 @@ local function syncModelSearch()
     reloadModelList()
 end
 
+submodels:Row()
+local vAsec = submodels:Section("Apply")
 local TARGET_OPTS = { "Myself", "Teammates", "Enemies", "Selected player" }
-local cmbModelTarget = vSsec:Combo("Apply target", TARGET_OPTS, 1)
-local cmbModelPlayer = vSsec:Combo("Player", { "(refresh in-game)" }, 1)
-local cmbModelPlayerWd = vSsec.ws[#vSsec.ws]
-local cbModelPersist = vSsec:Checkbox("Persist (reapply each round)", C.getModelPersist and C.getModelPersist() or true)
+local cmbModelTarget = vAsec:Combo("Apply target", TARGET_OPTS, 1)
+local cmbModelPlayer = vAsec:Combo("Player", { "(refresh in-game)" }, 1)
+local cmbModelPlayerWd = vAsec.ws[#vAsec.ws]
+local cbModelPersist = vAsec:Checkbox("Persist (reapply each round)", C.getModelPersist and C.getModelPersist() or true)
 local playerListData = {}
 
 local function refreshPlayerCombo()
@@ -1110,11 +1112,11 @@ local function selectedPlayerKey()
     return info and info.key or nil
 end
 
-vSsec:Button("Refresh players", function()
+vAsec:Button("Refresh players", function()
     refreshPlayerCombo()
     pcall(function() M:Notify("players: " .. tostring(#playerListData)) end)
 end)
-vSsec:Button("Apply model to target", function()
+vAsec:Button("Apply model to target", function()
     local path = selectedModelPath()
     if not path then pcall(function() M:Notify("select a model first") end); return end
     local mode = cmbModelTarget:Get() or 1
@@ -1123,13 +1125,13 @@ vSsec:Button("Apply model to target", function()
     pcall(function() n = C.applyModelTarget(mode, selectedPlayerKey(), path) or 0 end)
     pcall(function() M:Notify(string.format("applied to %d player(s)", n)) end)
 end)
-vSsec:Button("Clear target models", function()
+vAsec:Button("Clear target models", function()
     local mode = cmbModelTarget:Get() or 1
     local n = 0
     pcall(function() n = C.clearModelTarget(mode, selectedPlayerKey()) or 0 end)
     pcall(function() M:Notify(string.format("cleared %d assignment(s)", n)) end)
 end)
-vSsec:Button("Clear all model assignments", function()
+vAsec:Button("Clear all model assignments", function()
     pcall(function() C.clearAllModels() end)
     lastModelSel = 1
     if modelWd then modelWd.value = 1 end
@@ -1147,7 +1149,6 @@ end
 local playerRefreshTick = 0
 local function syncPlayerList()
     playerRefreshTick = playerRefreshTick + 1
-    -- only refresh in-game, and not on the very first frames after inject
     if playerRefreshTick < 120 then return end
     if playerRefreshTick == 120 or playerRefreshTick % 300 == 0 then
         pcall(refreshPlayerCombo)
@@ -1657,4 +1658,4 @@ M:OnFrame(function()
     pcall(vrSync)
 end)
 
-M:Build({ w = 720, h = 500 })
+M:Build({ w = 760, autoH = true, resize = true })

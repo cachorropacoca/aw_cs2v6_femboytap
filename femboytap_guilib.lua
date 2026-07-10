@@ -561,25 +561,45 @@ function Section:render(x, y, w)
         local fh = (clipBottom - 12) - y
         if fh > h then h = fh end
     end
-    rbox(x, y, w, h, 6, T.section, T.border)
+    -- skip fully clipped sections
+    if clipBottom and y >= clipBottom then return h end
+    if clipTop and (y + h) <= clipTop then return h end
 
-    rfill(x + 14, y + 12, 3, 14, 1, T.accent)
-    text(x + 23, y + 12, T.texthi, self.title, FONT_B)
-    rect(x + 14, y + 33, w - 28, 1, T.divider)
+    local boxH = h
+    if clipBottom and (y + boxH) > clipBottom then
+        boxH = mmax(0, clipBottom - y)
+    end
+    if boxH > 0 then
+        rbox(x, y, w, boxH, 6, T.section, T.border)
+        if (not clipTop or y + 26 > clipTop) and (not clipBottom or y + 12 < clipBottom) then
+            rfill(x + 14, y + 12, 3, 14, 1, T.accent)
+            text(x + 23, y + 12, T.texthi, self.title, FONT_B)
+            if y + 33 < (clipBottom or 1e9) then
+                rect(x + 14, y + 33, w - 28, 1, T.divider)
+            end
+        end
+    end
 
     local iy = y + 44
     local ix = x + 14
     local iw = w - 28
     for _, wd in ipairs(self.ws) do
+        local wh
         if wd.kind == "listbox" and wd.fill then
             local labelH = (wd.label and wd.label ~= "") and 18 or 0
             wd._fillH = mmax(60, (y + h - 12) - (iy + labelH))
-            self:_widget(wd, ix, iy, iw)
-            iy = iy + labelH + wd._fillH + 6
+            wh = labelH + wd._fillH + 6
         else
-            self:_widget(wd, ix, iy, iw)
-            iy = iy + wheight(wd)
+            wh = wheight(wd)
         end
+        local visible = true
+        if clipBottom and iy >= clipBottom then visible = false end
+        if clipTop and (iy + wh) <= clipTop then visible = false end
+        if visible then
+            self:_widget(wd, ix, iy, iw)
+        end
+        iy = iy + wh
+        if clipBottom and iy >= clipBottom then break end
     end
     return h
 end
@@ -1693,10 +1713,32 @@ function M:_frame()
     if tab then pcall(function() contentH = tabContentHeight(tab) end) end
     local chrome = T.titlebar + T.pad * 2
 
+    local screenW, screenH = 1920, 1080
+    pcall(function() screenW, screenH = draw.GetScreenSize() end)
+    screenW = screenW or 1920
+    screenH = screenH or 1080
+
+    -- resize grip (bottom-right)
+    local grip = 14
+    if self._resizeEnabled ~= false then
+        local gx, gy = real.x + real.w - grip, real.y + real.h - grip
+        if ms.pressed and not ms.consumed and hovering(gx, gy, grip, grip) then
+            ms.consumed = true
+            self._resize = { ox = ms.x, oy = ms.y, ow = real.w, oh = real.h }
+            self._autoH = false
+        end
+        if self._resize then
+            if ms.down then
+                real.w = clamp(self._resize.ow + (ms.x - self._resize.ox), 520, screenW - 40)
+                real.h = clamp(self._resize.oh + (ms.y - self._resize.oy), 300, screenH - 40)
+            else
+                self._resize = nil
+            end
+        end
+    end
+
     if self._autoH then
-        local screenH = 1080
-        pcall(function() local sw; sw, screenH = draw.GetScreenSize() end)
-        local targetH = clamp(contentH + chrome, 220, (screenH or 1080) - 60)
+        local targetH = clamp(contentH + chrome + 8, 280, screenH - 60)
         real.h = real.h + (targetH - real.h) * clamp(DT * 14, 0, 1)
     end
 
@@ -1717,11 +1759,30 @@ function M:_frame()
     local maxScroll = mmax(0, contentH - availH)
     self._scroll = clamp(self._scroll or 0, 0, maxScroll)
 
+    -- scrollbar drag
+    if maxScroll > 0 then
+        local barX, barW = win.x + win.w - 7, 4
+        local th = mmax(20, (availH / contentH) * availH)
+        local ty = win.y + T.titlebar + (availH - th) * (self._scroll / maxScroll)
+        if ms.pressed and not ms.consumed and hovering(barX - 2, win.y + T.titlebar, barW + 6, availH) then
+            ms.consumed = true
+            self._scrollDrag = true
+        end
+        if self._scrollDrag then
+            if ms.down then
+                local frac = clamp((ms.y - (win.y + T.titlebar) - th * 0.5) / mmax(1, availH - th), 0, 1)
+                self._scroll = frac * maxScroll
+            else
+                self._scrollDrag = nil
+            end
+        end
+    end
+
     local tabEase = smooth(self._tabT)
     local cx = win.x + T.pad + (1 - tabEase) * 18
     local cy = win.y + T.titlebar + T.pad - self._scroll
-    local cw = win.w - T.pad * 2
-    clipTop, clipBottom = win.y + T.titlebar, win.y + win.h
+    local cw = win.w - T.pad * 2 - 8
+    clipTop, clipBottom = win.y + T.titlebar, win.y + win.h - 2
     if tab then
         local ok, err = pcall(function() tab:render(cx, cy, cw) end)
         if not ok then print("[femboytap] tab '" .. tostring(tab.name) .. "' error: " .. tostring(err)) end
@@ -1743,6 +1804,14 @@ function M:_frame()
         local ty = win.y + T.titlebar + (availH - th) * (self._scroll / maxScroll)
         rfill(win.x + win.w - 6, win.y + T.titlebar + 2, 3, availH - 4, 1, T.widget)
         rfill(win.x + win.w - 6, ty, 3, th, 1, T.accent)
+    end
+
+    -- resize grip visual
+    if self._resizeEnabled ~= false then
+        local gx, gy = win.x + win.w - 11, win.y + win.h - 11
+        rect(gx, gy + 6, 8, 1, T.textdim)
+        rect(gx + 3, gy + 3, 5, 1, T.textdim)
+        rect(gx + 6, gy, 2, 1, T.textdim)
     end
 
     self:_drawDropdown()
@@ -1780,7 +1849,16 @@ function M:Build(opts)
     if opts.h then self._win.h = opts.h end
     if opts.x then self._win.x = opts.x end
     if opts.y then self._win.y = opts.y end
-    self._autoH = (opts.h == nil)
+    if opts.autoH ~= nil then
+        self._autoH = opts.autoH and true or false
+    else
+        self._autoH = (opts.h == nil)
+    end
+    if opts.resize ~= nil then
+        self._resizeEnabled = opts.resize and true or false
+    else
+        self._resizeEnabled = true
+    end
 
     _getMouse = resolveMouse()
     _getWheel = resolveWheel()
