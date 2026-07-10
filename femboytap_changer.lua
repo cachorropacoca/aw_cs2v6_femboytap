@@ -615,8 +615,13 @@ local function models_root()
 end
 
 local SCAN_DIRS = { "characters", "agents", "models" }
+local SKIP_DIRS_ALT = { exg = true, materials = true }
 
-local function scan_into(dir, names, paths)
+local g_modelScanAlt = false
+local g_modelFilter  = ""
+
+local function scan_into(dir, names, paths, opts)
+    opts = opts or {}
     local fd = ffi.new("AW_FIND_DATA")
     local h = ffi.C.FindFirstFileA(dir .. "\\*", fd)
     if h == find_invalid() then return end
@@ -625,18 +630,30 @@ local function scan_into(dir, names, paths)
         if nm ~= "." and nm ~= ".." then
             local full = dir .. "\\" .. nm
             if band(fd.dwFileAttributes, 0x10) ~= 0 then
-                scan_into(full, names, paths)
+                local low = nm:lower()
+                if not (opts.skip_exg_mat and SKIP_DIRS_ALT[low]) then
+                    scan_into(full, names, paths, opts)
+                end
             elseif nm:sub(-7) == ".vmdl_c" then
                 local stem = nm:sub(1, #nm - 7)
-
                 if not stem:lower():match("_arms?$") then
-
                     local p = full:lower():find("\\csgo\\", 1, true)
                     if p then
                         local rel = full:sub(p + 6):gsub("\\", "/")
                         rel = rel:sub(1, #rel - 2)
-                        names[#names + 1] = stem
-                        paths[#paths + 1] = rel
+                        local filt = opts.filter
+                        if filt and filt ~= "" then
+                            local fl = filt:lower()
+                            if not stem:lower():find(fl, 1, true) and not rel:lower():find(fl, 1, true) then
+                                -- skip non-matching name
+                            else
+                                names[#names + 1] = stem
+                                paths[#paths + 1] = rel
+                            end
+                        else
+                            names[#names + 1] = stem
+                            paths[#paths + 1] = rel
+                        end
                     end
                 end
             end
@@ -651,8 +668,17 @@ local function scan_models()
     local names, paths = { "[ OFF ]" }, { "" }
     pcall(function()
         local root = models_root()
-        if root then
-            for _, sub in ipairs(SCAN_DIRS) do scan_into(root .. "\\" .. sub, names, paths) end
+        if not root then return end
+        local opts = {
+            skip_exg_mat = g_modelScanAlt and true or false,
+            filter = (g_modelFilter and g_modelFilter ~= "") and g_modelFilter or nil,
+        }
+        if g_modelScanAlt then
+            scan_into(root .. "\\characters", names, paths, opts)
+        else
+            for _, sub in ipairs(SCAN_DIRS) do
+                scan_into(root .. "\\" .. sub, names, paths, opts)
+            end
         end
     end)
     g_modelNames, g_modelPaths = names, paths
@@ -933,6 +959,9 @@ function Config.applyTable(newCfg, kdef, gdef, opts, lmodel)
     state.localModel = lmodel
     state.appliedLocalModel = nil
     state.applied  = {}
+    g_modelScanAlt = not not state.opts.model_scan_alt
+    g_modelFilter  = type(state.opts.model_filter) == "string" and state.opts.model_filter or ""
+    g_modelNames, g_modelPaths = nil, nil
 end
 
 function Config.save() return file_write(CFG_FILE, Config.serialize()) end
@@ -1018,6 +1047,18 @@ function C.setOpt(k, v)  state.opts[k] = v; Config.save() end
 
 function C.modelList()     return scan_models() end
 function C.refreshModels() return rescan_models() end
+function C.getModelScanAlt() return g_modelScanAlt end
+function C.setModelScanAlt(on)
+    g_modelScanAlt = not not on
+    state.opts.model_scan_alt = g_modelScanAlt
+    Config.save()
+end
+function C.getModelFilter() return g_modelFilter or "" end
+function C.setModelFilter(q)
+    g_modelFilter = tostring(q or "")
+    state.opts.model_filter = g_modelFilter
+    Config.save()
+end
 function C.getLocalModel() return state.localModel end
 function C.setLocalModel(path)
     if path == nil or path == "" then state.localModel = nil

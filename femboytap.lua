@@ -1038,7 +1038,11 @@ modelLb = vSec:Listbox("", mNames, "fill", 1)
 modelWd = vSec.ws[#vSec.ws]
 submodels:Col()
 local vSsec = submodels:Section("Settings")
-vSsec:Button("Refresh models", function()
+local cbModelAlt = vSsec:Checkbox("Characters only (skip exg/materials)", C.getModelScanAlt())
+local inpModelSearch = vSsec:Input("Search name", C.getModelFilter(), "filter by name...")
+local function reloadModelList()
+    C.setModelScanAlt(cbModelAlt:Get())
+    C.setModelFilter(inpModelSearch:Get() or "")
     local cur = C.getLocalModel()
     local n, p = C.refreshModels()
     modelPaths     = p
@@ -1049,7 +1053,18 @@ vSsec:Button("Refresh models", function()
         for i = 2, #p do if p[i] == cur then modelWd.value = i; break end end
     end
     lastModelSel = modelWd.value
-end)
+end
+vSsec:Button("Refresh models", reloadModelList)
+vSsec:Button("Apply search", reloadModelList)
+
+local lastModelAlt = cbModelAlt:Get()
+local function syncModelSearch()
+    if not cbModelAlt then return end
+    local alt = cbModelAlt:Get()
+    if alt == lastModelAlt then return end
+    lastModelAlt = alt
+    reloadModelList()
+end
 
 local sublocal = vtab:Sub("Local")
 sublocal:Row()
@@ -1448,6 +1463,13 @@ cbAuto:Set(C.getOpt("autoFollow") and true or false)
 lastAuto = cbAuto:Get()
 
 do
+    cbModelAlt:Set(C.getModelScanAlt())
+    inpModelSearch:Set(C.getModelFilter() or "")
+    lastModelAlt = cbModelAlt:Get()
+    reloadModelList()
+end
+
+do
     local s = {}
     local hx = tonumber(C.getOpt("hl_x")); if hx then s.x_off = hx end
     local hy = tonumber(C.getOpt("hl_y")); if hy then s.y_off = hy end
@@ -1531,6 +1553,7 @@ M:OnFrame(function()
     pcall(autoApply)
     pcall(persistOpts)
     pcall(syncModel)
+    pcall(syncModelSearch)
     pcall(syncVm)
     pcall(HS.missTick)
     pcall(HS.sync)
