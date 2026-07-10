@@ -1034,7 +1034,7 @@ submodels:Row()
 local vSec = submodels:Section("List")
 local mNames
 mNames, modelPaths = C.modelList()
-modelLb = vSec:Listbox("", mNames, "fill", 1)
+modelLb = vSec:Listbox("", mNames, 300, 1)
 modelWd = vSec.ws[#vSec.ws]
 submodels:Col()
 local vSsec = submodels:Section("Scan")
@@ -1066,7 +1066,7 @@ local function syncModelSearch()
     reloadModelList()
 end
 
-submodels:Row()
+-- Apply stays in the SAME right column under Scan (second Row was pushed off-screen by List fill)
 local vAsec = submodels:Section("Apply")
 local TARGET_OPTS = { "Myself", "Teammates", "Enemies", "Selected player" }
 local cmbModelTarget = vAsec:Combo("Apply target", TARGET_OPTS, 1)
@@ -1658,4 +1658,4 @@ M:OnFrame(function()
     pcall(vrSync)
 end)
 
-M:Build({ w = 760, autoH = true, resize = true })
+M:Build({ w = 780, h = 620, autoH = true, resize = true })

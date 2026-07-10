@@ -556,12 +556,18 @@ function Section:height()
 end
 
 function Section:render(x, y, w)
-    local h = self:height()
-    if self._hasFill and clipBottom then
+    -- Layout height: explicit row stretch (_layoutH), else natural.
+    -- Fill-to-window only when NOT in a measured row (auto-pack / Skins),
+    -- so Row() siblings cannot inflate and push later panels off-screen.
+    local natural = self:height()
+    local h = natural
+    if self._layoutH then
+        h = mmax(natural, self._layoutH)
+    elseif self._hasFill and clipBottom then
         local fh = (clipBottom - 12) - y
         if fh > h then h = fh end
     end
-    -- skip fully clipped sections
+
     if clipBottom and y >= clipBottom then return h end
     if clipTop and (y + h) <= clipTop then return h end
 
@@ -569,12 +575,20 @@ function Section:render(x, y, w)
     if clipBottom and (y + boxH) > clipBottom then
         boxH = mmax(0, clipBottom - y)
     end
-    if boxH > 0 then
-        rbox(x, y, w, boxH, 6, T.section, T.border)
+    if boxH > 0 and (not clipTop or y + boxH > clipTop) then
+        local drawY = y
+        local drawH = boxH
+        if clipTop and drawY < clipTop then
+            drawH = drawH - (clipTop - drawY)
+            drawY = clipTop
+        end
+        if drawH > 0 then
+            rbox(x, drawY, w, drawH, 6, T.section, T.border)
+        end
         if (not clipTop or y + 26 > clipTop) and (not clipBottom or y + 12 < clipBottom) then
             rfill(x + 14, y + 12, 3, 14, 1, T.accent)
             text(x + 23, y + 12, T.texthi, self.title, FONT_B)
-            if y + 33 < (clipBottom or 1e9) then
+            if (not clipBottom or y + 33 < clipBottom) and (not clipTop or y + 34 > clipTop) then
                 rect(x + 14, y + 33, w - 28, 1, T.divider)
             end
         end
@@ -587,7 +601,8 @@ function Section:render(x, y, w)
         local wh
         if wd.kind == "listbox" and wd.fill then
             local labelH = (wd.label and wd.label ~= "") and 18 or 0
-            wd._fillH = mmax(60, (y + h - 12) - (iy + labelH))
+            local remain = (y + h - 12) - (iy + labelH)
+            wd._fillH = mmax(wd.h or 120, remain)
             wh = labelH + wd._fillH + 6
         else
             wh = wheight(wd)
@@ -835,6 +850,7 @@ end
 local function renderSectionAt(s, x, y, w)
     local h = 40
     pcall(function() h = s:height() end)
+    if s._layoutH then h = mmax(h, s._layoutH) end
     if clipBottom and y >= clipBottom then return h end
     if clipTop and (y + h) <= clipTop then return h end
     local rh = h
@@ -862,14 +878,39 @@ local function renderRows(rows, x, y, w)
         if n > 0 then
             local gap = 8
             local colW = (w - (n - 1) * gap) / n
+            -- Pass 1: natural heights per column
+            local colH = {}
             local rowH = 0
+            for ci, col in ipairs(row) do
+                local h = 0
+                for _, s in ipairs(col) do
+                    s._layoutH = nil
+                    local sh = 40
+                    pcall(function() sh = s:height() end)
+                    h = h + sh + T.sec_gap
+                end
+                colH[ci] = h
+                if h > rowH then rowH = h end
+            end
+            -- Pass 2: stretch fill sections to row height, then render
             for ci, col in ipairs(row) do
                 local cxx = x + (ci - 1) * (colW + gap)
                 local yy = cy
+                local stretch = rowH - colH[ci]
+                if stretch > 0 then
+                    for _, s in ipairs(col) do
+                        if s._hasFill then
+                            local sh = 40
+                            pcall(function() sh = s:height() end)
+                            s._layoutH = sh + stretch
+                            break
+                        end
+                    end
+                end
                 for _, s in ipairs(col) do
                     yy = yy + renderSectionAt(s, cxx, yy, colW) + T.sec_gap
+                    s._layoutH = nil
                 end
-                if (yy - cy) > rowH then rowH = yy - cy end
             end
             cy = cy + rowH
         end
