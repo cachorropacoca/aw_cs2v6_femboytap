@@ -1066,6 +1066,85 @@ local function syncModelSearch()
     reloadModelList()
 end
 
+local TARGET_OPTS = { "Myself", "Teammates", "Enemies", "Selected player" }
+local cmbModelTarget = vSsec:Combo("Apply target", TARGET_OPTS, 1)
+local cmbModelPlayer = vSsec:Combo("Player", { "(refresh in-game)" }, 1)
+local cmbModelPlayerWd = vSsec.ws[#vSsec.ws]
+local cbModelPersist = vSsec:Checkbox("Persist (reapply each round)", C.getModelPersist and C.getModelPersist() or true)
+local playerListData = {}
+
+local function refreshPlayerCombo()
+    local players = C.listPlayers and C.listPlayers() or {}
+    table.sort(players, function(a, b)
+        if a.is_local ~= b.is_local then return a.is_local end
+        return (a.name or "") < (b.name or "")
+    end)
+    playerListData = players
+    local names = {}
+    for i, info in ipairs(players) do
+        local label = info.name or ("#" .. tostring(info.idx))
+        if info.is_local then label = label .. " [You]" end
+        names[#names + 1] = label
+    end
+    if #names == 0 then names[1] = "(no alive players)" end
+    cmbModelPlayerWd.options = names
+    if (cmbModelPlayerWd.value or 1) > #names then cmbModelPlayerWd.value = 1 end
+end
+
+local function selectedModelPath()
+    local sel = modelLb and modelLb:Get() or 1
+    if not modelPaths or sel <= 1 then return nil end
+    local p = modelPaths[sel]
+    if type(p) == "string" and p ~= "" then return p end
+    return nil
+end
+
+local function selectedPlayerKey()
+    local sel = cmbModelPlayer:Get() or 1
+    local info = playerListData[sel]
+    return info and info.key or nil
+end
+
+vSsec:Button("Refresh players", function()
+    refreshPlayerCombo()
+    M:Notify("players: " .. tostring(#playerListData))
+end)
+vSsec:Button("Apply model to target", function()
+    local path = selectedModelPath()
+    if not path then M:Notify("select a model first"); return end
+    local mode = cmbModelTarget:Get() or 1
+    C.setModelPersist(cbModelPersist:Get())
+    local n = C.applyModelTarget(mode, selectedPlayerKey(), path)
+    M:Notify(string.format("applied to %d player(s)", n or 0))
+end)
+vSsec:Button("Clear target models", function()
+    local mode = cmbModelTarget:Get() or 1
+    local n = C.clearModelTarget(mode, selectedPlayerKey())
+    M:Notify(string.format("cleared %d assignment(s)", n or 0))
+end)
+vSsec:Button("Clear all model assignments", function()
+    C.clearAllModels()
+    lastModelSel = 1
+    if modelWd then modelWd.value = 1 end
+    M:Notify("all model assignments cleared")
+end)
+
+local lastPersist = cbModelPersist:Get()
+local function syncModelPersist()
+    local on = cbModelPersist:Get()
+    if on == lastPersist then return end
+    lastPersist = on
+    C.setModelPersist(on)
+end
+
+local playerRefreshTick = 0
+local function syncPlayerList()
+    playerRefreshTick = playerRefreshTick + 1
+    if playerRefreshTick == 90 or playerRefreshTick % 180 == 0 then
+        pcall(refreshPlayerCombo)
+    end
+end
+
 local sublocal = vtab:Sub("Local")
 sublocal:Row()
 local localSection = sublocal:Section("Local player")
@@ -1466,7 +1545,10 @@ do
     cbModelAlt:Set(C.getModelScanAlt())
     inpModelSearch:Set(C.getModelFilter() or "")
     lastModelAlt = cbModelAlt:Get()
+    if C.getModelPersist then cbModelPersist:Set(C.getModelPersist()) end
+    lastPersist = cbModelPersist:Get()
     reloadModelList()
+    pcall(refreshPlayerCombo)
 end
 
 do
@@ -1554,6 +1636,8 @@ M:OnFrame(function()
     pcall(persistOpts)
     pcall(syncModel)
     pcall(syncModelSearch)
+    pcall(syncModelPersist)
+    pcall(syncPlayerList)
     pcall(syncVm)
     pcall(HS.missTick)
     pcall(HS.sync)
