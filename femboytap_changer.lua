@@ -358,6 +358,7 @@ local state = {
     modelApplied     = {}, -- key -> last path we set
     modelPersist     = true,
     modelTargetMode  = 1,  -- 1 self, 2 teammates, 3 enemies, 4 selected
+    modelCrashFix    = false, -- optional: throttle + safe precache + cache
 }
 
 local Config = {}
@@ -608,6 +609,26 @@ end
 
 local function find_invalid() return ffi.cast("void*", ffi.cast("intptr_t", -1)) end
 
+local modelClock = (function()
+    for _, fn in ipairs({
+        function() return globals.RealTime() end,
+        function() return globals.CurTime() end,
+        function() return os.clock() end,
+    }) do
+        local ok, v = pcall(fn)
+        if ok and type(v) == "number" then
+            return fn
+        end
+    end
+    return function() return 0 end
+end)()
+
+local function now_s()
+    local ok, v = pcall(modelClock)
+    if ok and type(v) == "number" then return v end
+    return 0
+end
+
 local function models_root()
     model_ffi()
     local buf = ffi.new("char[?]", 1024)
@@ -696,6 +717,8 @@ end
 
 local g_IRS = nil
 local PRECACHE_SIG = "40 53 55 57 48 81 EC 80 00 00 00 48 8B 01 49 8B E8 48 8B FA"
+local g_precache_ok = nil -- nil=unknown, true/false decided
+local g_precached_paths = {}
 local function resolve_model_fns()
     if fnptr.precache and g_IRS and fnptr.cbuf_insert then return true end
     model_ffi()
@@ -724,18 +747,55 @@ local function resolve_model_fns()
             if ins then fnptr.cbuf_insert = ffi.cast("const char*(*)(void*, int, const char*, int, int)", ins) end
         end)
     end
-    return fnptr.precache ~= nil and g_IRS ~= nil and fnptr.cbuf_insert ~= nil
+
+    local ok = (fnptr.precache ~= nil and g_IRS ~= nil and fnptr.cbuf_insert ~= nil)
+    if not ok then
+        g_precache_ok = false
+        return false
+    end
+
+    -- Safety check (Fix C): verify IRS vtable slot points to the same function as our signature.
+    -- Only enabled when crash-fix mode is on.
+    if state.modelCrashFix and g_precache_ok == nil then
+        local decided = false
+        local safe = false
+        pcall(function()
+            local vtbl = ffi.cast("void***", g_IRS)[0]
+            local vt41 = tonumber(ffi.cast("uintptr_t", vtbl[41]))
+            local sigp = tonumber(ffi.cast("uintptr_t", fn.precache))
+            if vt41 and sigp and vt41 == sigp then
+                safe = true
+            else
+                safe = false
+            end
+            decided = true
+        end)
+        if not decided then safe = false end
+        g_precache_ok = safe
+        if not g_precache_ok then
+            print("[changer] precache unsafe (vtable mismatch) -> disabling precache calls")
+        end
+    end
+
+    return true
 end
 
 local function precache_model(path)
     if path == nil or path == "" then return end
     if not resolve_model_fns() then return end
+    if state.modelCrashFix then
+        if g_precached_paths[path] then return end -- Fix D: cache per path
+        if g_precache_ok == false then return end
+    end
     local cb = ffi.new("AW_CBufStr")
     cb.m_nLength = 0
     cb.m_nAllocatedSize = 0xC0000008
     cb.u.p = nil
     pcall(function() fnptr.cbuf_insert(cb, 0, path, -1, 0) end)
     pcall(function() fnptr.precache(g_IRS, cb, "") end)
+    if state.modelCrashFix then
+        g_precached_paths[path] = true
+    end
 end
 
 local function safe_set_model(pawn, path)
@@ -848,6 +908,17 @@ end
 local function apply_path_to_player(info, path)
     if not info or not path or path == "" then return false end
     if not in_game() then return false end
+
+    local t = now_s()
+    if state.modelCrashFix then
+        -- Fix B: cooldown to avoid hammering resourcesystem.dll / SetModel in persist mode
+        state.modelNextTry = state.modelNextTry or {}
+        local nxt = state.modelNextTry[info.key]
+        if nxt and t < nxt then
+            return false
+        end
+    end
+
     if not model_needs_apply(info, path) then return false end
     local raw = info.raw
     if not valid(raw) then
@@ -861,7 +932,15 @@ local function apply_path_to_player(info, path)
             state.appliedLocalModel = path
             state.overrideActive = true
         end
+        if state.modelCrashFix then
+            -- small cooldown even on success to prevent rapid reapply loops
+            state.modelNextTry[info.key] = t + 1.25
+        end
         return true
+    end
+    if state.modelCrashFix then
+        -- backoff on failure (prevents tight crash loops)
+        state.modelNextTry[info.key] = t + 2.5
     end
     return false
 end
@@ -872,6 +951,14 @@ local function apply_all_model_assignments()
     if not next(state.modelAssignments) and not (state.localModel and state.localModel ~= "") then
         return
     end
+    if state.modelCrashFix then
+        -- Fix B: global throttle (persist shouldn't run every CreateMove)
+        state.modelNextGlobal = state.modelNextGlobal or 0
+        local t = now_s()
+        if t < (state.modelNextGlobal or 0) then return end
+        state.modelNextGlobal = t + 0.25
+    end
+
     local ok, players = pcall(collect_alive_players)
     if not ok or not players then return end
     for _, info in ipairs(players) do
@@ -1150,12 +1237,19 @@ function Config.applyTable(newCfg, kdef, gdef, opts, lmodel, persist, assigns)
     state.appliedLocalModel = nil
     state.applied  = {}
     state.modelPersist = (persist ~= false)
+    state.modelCrashFix = not not state.opts.model_crashfix
     state.modelAssignments = assigns or {}
     if lmodel and lmodel ~= "" then state.modelAssignments["local"] = lmodel end
     state.modelApplied = {}
     g_modelScanAlt = not not state.opts.model_scan_alt
     g_modelFilter  = type(state.opts.model_filter) == "string" and state.opts.model_filter or ""
     g_modelNames, g_modelPaths = nil, nil
+
+    -- if crash-fix got toggled via config, reset runtime caches
+    state.modelNextTry = {}
+    state.modelNextGlobal = 0
+    g_precached_paths = {}
+    g_precache_ok = nil
 end
 
 function Config.save() return file_write(CFG_FILE, Config.serialize()) end
@@ -1275,6 +1369,18 @@ function C.setModelPersist(on)
     -- force re-check next tick
     state.modelApplied = {}
     state.appliedLocalModel = nil
+    Config.save()
+end
+
+function C.getModelCrashFix() return not not state.modelCrashFix end
+function C.setModelCrashFix(on)
+    state.modelCrashFix = not not on
+    state.opts.model_crashfix = state.modelCrashFix
+    -- reset throttles/caches so behavior changes immediately
+    state.modelNextTry = {}
+    state.modelNextGlobal = 0
+    g_precached_paths = {}
+    g_precache_ok = nil
     Config.save()
 end
 
